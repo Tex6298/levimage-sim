@@ -132,7 +132,6 @@ def update_params(I,Kt,R,alphaR,imax,duty_max,ke,kg,kv,cmech,Cth,hth,Tamb,Tref,T
     Output("rpm_limit","value"),
     Output("pulses_per_rev","value"),
     Output("rpm_target","value"),
-    Output("sim_params","data"),
     Input("btn_load_preset","n_clicks"),
     DashState("preset_select","value"),
     prevent_initial_call=True
@@ -161,8 +160,7 @@ def load_preset(n_clicks, filename):
         params.get("T_limit", 363.15),
         rpm_limit,
         params.get("pulses_per_rev", 1),
-        rpm_target,
-        params
+        rpm_target
     )
 
 # Commands & interlocks
