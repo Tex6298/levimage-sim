@@ -1,11 +1,26 @@
 from dash import Dash, dcc, html, Input, Output, State as DashState, ctx
 import plotly.graph_objects as go
-import numpy as np
+import numpy as np, os, json
 from levimag_sim.model import PlantParams, State as SimState, Mode, step
 from levimag_sim.controller import next_mode
 
+def list_presets():
+    preset_dir = os.path.join(os.path.dirname(__file__), "presets")
+    try:
+        files = sorted([f for f in os.listdir(preset_dir) if f.endswith(".json")])
+    except FileNotFoundError:
+        files = []
+    return [{"label": f, "value": f} for f in files]
+
+def load_preset_params(filename):
+    preset_dir = os.path.join(os.path.dirname(__file__), "presets")
+    path = os.path.join(preset_dir, filename)
+    with open(path, "r") as fp:
+        data = json.load(fp)
+    return data.get("params", {}), data.get("name", filename)
+
 app = Dash(__name__)
-server = app.server  # for gunicorn if deployed
+server = app.server
 
 def label_input(label, id, value, step=None, placeholder=None):
     return html.Div([
@@ -17,12 +32,13 @@ def label_input(label, id, value, step=None, placeholder=None):
 app.layout = html.Div([
     html.H2("Levitated Magnet – Pulsed Drive Simulator"),
     html.Div([
-        # ==== Controls column ====
         html.Div([
             html.H4("Targets"),
+            html.Div("Preset"),
+            dcc.Dropdown(id="preset_select", options=list_presets(), value=None, placeholder="Select a preset..."),
+            html.Button("Load Preset", id="btn_load_preset", n_clicks=0, className="btn", style={"marginTop":"6px"}),
             html.Div("Target RPM"),
-            dcc.Slider(id="rpm_target", min=0, max=20000, step=50, value=3000,
-                       tooltip={"placement":"bottom"}),
+            dcc.Slider(id="rpm_target", min=0, max=60000, step=50, value=3000, tooltip={"placement":"bottom"}),
             html.Div([
                 html.Button("Start", id="btn_start", n_clicks=0, className="btn"),
                 html.Button("Brake", id="btn_brake", n_clicks=0, className="btn"),
@@ -65,7 +81,6 @@ app.layout = html.Div([
             ),
         ], style={"width":"32%","display":"inline-block","verticalAlign":"top","padding":"10px","borderRight":"1px solid #eee"}),
 
-        # ==== Plots & status ====
         html.Div([
             html.Div(id="mode_badge", style={"fontWeight":"600","marginBottom":"6px"}),
             dcc.Graph(id="rpm_plot", config={"displaylogo": False}),
@@ -74,13 +89,13 @@ app.layout = html.Div([
         ], style={"width":"66%","display":"inline-block","padding":"10px"}),
     ]),
 
-    dcc.Interval(id="tick", interval=50, n_intervals=0),  # 20 Hz UI update
+    dcc.Interval(id="tick", interval=50, n_intervals=0),
     dcc.Store(id="sim_state"),
     dcc.Store(id="sim_params"),
     dcc.Store(id="sim_flags")
 ])
 
-# Assemble PlantParams from UI
+# Params builder
 @app.callback(
     Output("sim_params","data"),
     Input("I","value"), Input("Kt","value"), Input("R","value"),
@@ -97,12 +112,65 @@ def update_params(I,Kt,R,alphaR,imax,duty_max,ke,kg,kv,cmech,Cth,hth,Tamb,Tref,T
                     i_max=imax,duty_max=duty_max,pulses_per_rev=int(ppr))
     return p.__dict__
 
+# Load preset
+@app.callback(
+    Output("I","value"),
+    Output("Kt","value"),
+    Output("R","value"),
+    Output("alphaR","value"),
+    Output("imax","value"),
+    Output("duty_max","value"),
+    Output("ke","value"),
+    Output("kg","value"),
+    Output("kv","value"),
+    Output("cmech","value"),
+    Output("Cth","value"),
+    Output("hth","value"),
+    Output("Tamb","value"),
+    Output("Tref","value"),
+    Output("Tlim","value"),
+    Output("rpm_limit","value"),
+    Output("pulses_per_rev","value"),
+    Output("rpm_target","value"),
+    Output("sim_params","data"),
+    Input("btn_load_preset","n_clicks"),
+    DashState("preset_select","value"),
+    prevent_initial_call=True
+)
+def load_preset(n_clicks, filename):
+    if not filename:
+        raise Exception("No preset selected")
+    params, _ = load_preset_params(filename)
+    rpm_limit = params.get("rpm_limit", 12000)
+    rpm_target = int(0.8 * rpm_limit)
+    return (
+        params.get("I", 0.02),
+        params.get("Kt", 0.05),
+        params.get("R", 2.0),
+        params.get("alpha_R", 0.0039),
+        params.get("i_max", 5.0),
+        params.get("duty_max", 0.02),
+        params.get("ke", 1e-4),
+        params.get("kg", 5e-5),
+        params.get("kv", 0.0),
+        params.get("c_mech", 0.0),
+        params.get("C_th", 200.0),
+        params.get("h_th", 0.8),
+        params.get("Tamb", 293.15),
+        params.get("T_ref", 293.15),
+        params.get("T_limit", 363.15),
+        rpm_limit,
+        params.get("pulses_per_rev", 1),
+        rpm_target,
+        params
+    )
+
 # Commands & interlocks
 @app.callback(
     Output("sim_flags","data"),
     Input("btn_start","n_clicks"), Input("btn_brake","n_clicks"),
     Input("btn_stop","n_clicks"), Input("btn_reset","n_clicks"),
-    Input("interlocks","value"), DashState("rpm_target","value"),
+    DashState("interlocks","value"), DashState("rpm_target","value"),
     prevent_initial_call=False
 )
 def commands(n1,n2,n3,n4,locks,target):
@@ -129,26 +197,6 @@ def commands(n1,n2,n3,n4,locks,target):
     DashState("sim_state","data"), DashState("sim_params","data"), DashState("sim_flags","data")
 )
 def sim_step(n, sim_state, sim_params, flags):
-    # ---- Build safe defaults for flags to avoid KeyError during early UI init ----
-    if flags is None or not isinstance(flags, dict):
-        flags = {}
-    # Safe getters with defaults
-    rpm_target = flags.get("rpm_target", 3000)
-    hold_band  = flags.get("hold_band", 50)
-    rpm_min    = flags.get("rpm_min", 100)
-    interlocks_ok = flags.get("interlocks_ok", True)
-    # Normalize a full flags dict for downstream calls
-    flags = {
-        "cmd_start": flags.get("cmd_start", False),
-        "cmd_brake": flags.get("cmd_brake", False),
-        "cmd_stop":  flags.get("cmd_stop", False),
-        "cmd_reset": flags.get("cmd_reset", False),
-        "interlocks_ok": interlocks_ok,
-        "hold_band": hold_band,
-        "rpm_min": rpm_min,
-        "rpm_target": rpm_target,
-    }
-
     # init
     if sim_state is None:
         s = SimState(theta=0.0, omega=0.0, Tcoil=293.15, t=0.0)
@@ -161,7 +209,6 @@ def sim_step(n, sim_state, sim_params, flags):
 
     # load params
     if sim_params is None:
-        # default params
         p = PlantParams(I=0.02,Kt=0.05,R=2.0,alpha_R=0.0039,T_ref=293.15,
                         C_th=200.0,h_th=0.8,Tamb=293.15,ke=1e-4,kg=5e-5,kv=0.0,
                         c_mech=0.0,rpm_limit=12000,T_limit=363.15,
@@ -169,52 +216,58 @@ def sim_step(n, sim_state, sim_params, flags):
     else:
         p = PlantParams(**sim_params)
 
-    # mode transitions unless fault
-    if flags is None:
-        flags = {"interlocks_ok": True, "rpm_target": 3000, "cmd_start": False, "cmd_brake": False, "cmd_stop": False, "cmd_reset": False, "hold_band":50, "rpm_min":100}
+    # safe flags
+    if flags is None or not isinstance(flags, dict):
+        flags = {}
+    rpm_target = flags.get("rpm_target", 3000)
+    hold_band  = flags.get("hold_band", 50)
+    rpm_min    = flags.get("rpm_min", 100)
+    interlocks_ok = flags.get("interlocks_ok", True)
+    flags = {
+        "cmd_start": flags.get("cmd_start", False),
+        "cmd_brake": flags.get("cmd_brake", False),
+        "cmd_stop":  flags.get("cmd_stop", False),
+        "cmd_reset": flags.get("cmd_reset", False),
+        "interlocks_ok": interlocks_ok,
+        "hold_band": hold_band,
+        "rpm_min": rpm_min,
+        "rpm_target": rpm_target,
+    }
+
+    # mode transitions
     if mode != Mode.FAULT:
         mode = next_mode(mode, s, rpm_target, flags)
 
-    # integrate several 1 ms steps per UI tick
-    dt = 0.001
-    steps = 50
+    # integrate
+    dt = 0.001; steps = 50
     for _ in range(steps):
         s, mode = step(s, mode, rpm_target, p, dt)
-        if mode == Mode.FAULT and not flags.get("cmd_reset"): 
+        if mode == Mode.FAULT and not flags.get("cmd_reset"):
             break
         if mode == Mode.FAULT and flags.get("cmd_reset"):
-            s = DashState(theta=0.0, omega=0.0, Tcoil=p.Tamb, t=0.0); mode = Mode.IDLE
+            s = SimState(theta=0.0, omega=0.0, Tcoil=p.Tamb, t=0.0); mode = Mode.IDLE
 
     rpm = s.omega * 60/(2*np.pi)
-
-    # approximate loss power breakdown for plotting
     P_eddy_gas = (p.ke + p.kg) * s.omega**2
     P_visc = p.kv * abs(s.omega**3)
     P_mech = abs(np.sign(s.omega)*p.c_mech * s.omega)
     P_loss = P_eddy_gas + P_visc + P_mech
 
     hist["t"].append(s.t); hist["rpm"].append(rpm); hist["Ploss"].append(P_loss); hist["T"].append(s.Tcoil)
-
-    # Keep history from growing without bound
     if len(hist["t"]) > 5000:
         for k in list(hist.keys()):
             hist[k] = hist[k][-4000:]
 
-
     fig_rpm = go.Figure().add_scatter(x=hist["t"], y=hist["rpm"], name="RPM")
     fig_rpm.update_layout(margin=dict(l=30,r=10,t=20,b=30), yaxis_title="RPM", xaxis_title="Time [s]")
-
     fig_power = go.Figure().add_scatter(x=hist["t"], y=hist["Ploss"], name="Loss Power")
     fig_power.update_layout(margin=dict(l=30,r=10,t=20,b=30), yaxis_title="W (approx)", xaxis_title="Time [s]")
-
     fig_temp = go.Figure().add_scatter(x=hist["t"], y=hist["T"], name="Coil T")
     fig_temp.update_layout(margin=dict(l=30,r=10,t=20,b=30), yaxis_title="K", xaxis_title="Time [s]")
-
     badge = f"Mode: {mode.name}"
 
     sim_state = {"state": s.__dict__, "mode": mode.value, "hist": hist}
     return sim_state, fig_rpm, fig_power, fig_temp, badge
 
 if __name__ == "__main__":
-    # Dash ≥3 requires app.run(); disable reloader to avoid Windows signal issues
     app.run(debug=True, use_reloader=False, host="127.0.0.1", port=8050)
