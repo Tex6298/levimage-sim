@@ -1,6 +1,6 @@
 {
   "name": "Power module \u2013 2 rims (~15 kWh)",
-  "description": "Two concurrent composite rims tuned for high power, fast response. Target ~15 kWh at 30k rpm; very low eddy/gas losses; higher Kt and current limit.",
+  "description": "High power, fast response module.",
   "params": {
     "I": 10.942687833372478,
     "Kt": 0.08,

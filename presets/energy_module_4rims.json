@@ -1,6 +1,6 @@
 {
   "name": "Energy module \u2013 4 rims (~40 kWh)",
-  "description": "Four concurrent composite rims for minutes-level balancing. Target ~40 kWh at 25k rpm; efficiency-optimised with low duty and currents.",
+  "description": "Minutes-level balancing module.",
   "params": {
     "I": 42.01992128015033,
     "Kt": 0.06,

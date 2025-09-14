@@ -42,6 +42,8 @@ app.layout = html.Div([
             html.Div([
                 html.Button("Start", id="btn_start", n_clicks=0, className="btn"),
                 html.Button("Brake", id="btn_brake", n_clicks=0, className="btn"),
+                html.Button("Pause", id="btn_pause", n_clicks=0, className="btn"),
+                html.Button("Reset Plots", id="btn_reset_plots", n_clicks=0, className="btn"),
                 html.Button("Stop",  id="btn_stop",  n_clicks=0, className="btn"),
                 html.Button("Reset Fault", id="btn_reset", n_clicks=0, className="btn"),
             ], style={"display":"flex","gap":"8px","marginTop":"8px","flexWrap":"wrap"}),
@@ -83,6 +85,7 @@ app.layout = html.Div([
 
         html.Div([
             html.Div(id="mode_badge", style={"fontWeight":"600","marginBottom":"6px"}),
+            html.Div(id="advisor_panel", style={"background":"#fff7e6","border":"1px solid #ffd591","padding":"8px","borderRadius":"6px","marginBottom":"8px"}),
             dcc.Graph(id="rpm_plot", config={"displaylogo": False}),
             dcc.Graph(id="power_plot", config={"displaylogo": False}),
             dcc.Graph(id="temp_plot", config={"displaylogo": False}),
@@ -167,21 +170,26 @@ def load_preset(n_clicks, filename):
 @app.callback(
     Output("sim_flags","data"),
     Input("btn_start","n_clicks"), Input("btn_brake","n_clicks"),
-    Input("btn_stop","n_clicks"), Input("btn_reset","n_clicks"),
+    Input("btn_pause","n_clicks"), Input("btn_stop","n_clicks"), Input("btn_reset_plots","n_clicks"), Input("btn_reset","n_clicks"),
     DashState("interlocks","value"), DashState("rpm_target","value"),
     prevent_initial_call=False
 )
 def commands(n1,n2,n3,n4,locks,target):
     trig = ctx.triggered_id if ctx.triggered_id else None
+    running = trig in ("btn_start","btn_brake")
+    reset_hist = trig in ("btn_start","btn_reset_plots")
     return {
         "cmd_start": trig=="btn_start",
         "cmd_brake": trig=="btn_brake",
+        "cmd_pause": trig=="btn_pause",
         "cmd_stop":  trig=="btn_stop",
         "cmd_reset": trig=="btn_reset",
         "interlocks_ok": ("vac_ok" in (locks or []) and "cont_ok" in (locks or [])),
         "hold_band": 50,
         "rpm_min": 100,
-        "rpm_target": target or 0
+        "rpm_target": target or 0,
+        "running": running,
+        "reset_hist": reset_hist
     }
 
 # Simulation step
@@ -195,6 +203,8 @@ def commands(n1,n2,n3,n4,locks,target):
     DashState("sim_state","data"), DashState("sim_params","data"), DashState("sim_flags","data")
 )
 def sim_step(n, sim_state, sim_params, flags):
+    running = bool(flags.get("running")) if isinstance(flags, dict) else False
+    reset_hist = bool(flags.get("reset_hist")) if isinstance(flags, dict) else False
     # init
     if sim_state is None:
         s = SimState(theta=0.0, omega=0.0, Tcoil=293.15, t=0.0)
@@ -204,6 +214,9 @@ def sim_step(n, sim_state, sim_params, flags):
         s = SimState(**sim_state["state"])
         mode = Mode(sim_state["mode"])
         hist = sim_state["hist"]
+        if reset_hist:
+            hist = {"t":[], "rpm":[], "Ploss":[], "T":[]}
+            s.t = 0.0
 
     # load params
     if sim_params is None:
@@ -232,6 +245,21 @@ def sim_step(n, sim_state, sim_params, flags):
         "rpm_target": rpm_target,
     }
 
+    if not running:
+        rpm = s.omega * 60/(2*np.pi)
+        P_eddy_gas = (p.ke + p.kg) * s.omega**2
+        P_visc = p.kv * abs(s.omega**3)
+        P_mech = abs((1 if s.omega>=0 else -1)*p.c_mech * s.omega)
+        P_loss = P_eddy_gas + P_visc + P_mech
+        fig_rpm = go.Figure().add_scatter(x=hist.get("t",[]), y=hist.get("rpm",[]), name="RPM")
+        fig_rpm.update_layout(margin=dict(l=30,r=10,t=20,b=30), yaxis_title="RPM", xaxis_title="Time [s]")
+        fig_power = go.Figure().add_scatter(x=hist.get("t",[]), y=hist.get("Ploss",[]), name="Loss Power")
+        fig_power.update_layout(margin=dict(l=30,r=10,t=20,b=30), yaxis_title="W (approx)", xaxis_title="Time [s]")
+        fig_temp = go.Figure().add_scatter(x=hist.get("t",[]), y=hist.get("T",[]), name="Coil T")
+        fig_temp.update_layout(margin=dict(l=30,r=10,t=20,b=30), yaxis_title="K", xaxis_title="Time [s]")
+        badge = f"Mode: {mode.name} (paused)"
+        sim_state = {"state": s.__dict__, "mode": mode.value, "hist": hist}
+        return sim_state, fig_rpm, fig_power, fig_temp, badge
     # mode transitions
     if mode != Mode.FAULT:
         mode = next_mode(mode, s, rpm_target, flags)
@@ -266,6 +294,115 @@ def sim_step(n, sim_state, sim_params, flags):
 
     sim_state = {"state": s.__dict__, "mode": mode.value, "hist": hist}
     return sim_state, fig_rpm, fig_power, fig_temp, badge
+
+
+# ---- Limit Advisor: compute quick feasibility and warnings ----
+@app.callback(
+    Output("advisor_panel","children"),
+    Input("sim_state","data"),
+    Input("sim_params","data"),
+    Input("rpm_target","value"),
+)
+def limit_advisor(sim_state, sim_params, rpm_target):
+    import math
+    if sim_params is None:
+        return "Adjust parameters or load a preset to see advisory hints."
+    # unpack params
+    p = sim_params
+    I = float(p.get("I", 0.02))
+    Kt = float(p.get("Kt", 0.05))
+    R  = float(p.get("R", 2.0))
+    alphaR = float(p.get("alpha_R", 0.0039))
+    Tref = float(p.get("T_ref", 293.15))
+    Cth = float(p.get("C_th", 200.0))
+    hth = float(p.get("h_th", 0.8))
+    Tamb = float(p.get("Tamb", 293.15))
+    ke = float(p.get("ke", 1e-4))
+    kg = float(p.get("kg", 5e-5))
+    kv = float(p.get("kv", 0.0))
+    c_mech = float(p.get("c_mech", 0.0))
+    rpm_limit = float(p.get("rpm_limit", 12000))
+    Tlim = float(p.get("T_limit", 363.15))
+    i_max = float(p.get("i_max", 5.0))
+    duty_max = float(p.get("duty_max", 0.02))
+
+    # current state
+    if sim_state is None:
+        omega_now = 0.0; Tnow = Tamb
+    else:
+        try:
+            s = sim_state["state"]
+            omega_now = float(s["omega"]); Tnow = float(s["Tcoil"])
+        except Exception:
+            omega_now = 0.0; Tnow = Tamb
+
+    # basic derived
+    tau_max = Kt * i_max * duty_max  # average torque per rev during windowed drive
+    alpha0 = tau_max / max(I, 1e-12)
+    omega_target = (rpm_target or 0) * 2*math.pi/60.0
+    # Loss torque at target
+    tau_loss_target = (ke + kg) * omega_target + kv * omega_target * abs(omega_target) + math.copysign(1.0, omega_target if omega_target!=0 else 1.0) * c_mech
+    # Time to target ignoring losses (if accel > 0)
+    time_to_target = math.inf
+    if alpha0 > 1e-9 and omega_target > omega_now:
+        time_to_target = (omega_target - omega_now)/alpha0
+
+    # Thermal check at max drive (steady-state estimate)
+    R_T = R * (1 + alphaR * (Tnow - Tref))
+    P_joule = (i_max**2) * R_T * duty_max
+    if hth > 1e-9:
+        Teq = Tamb + P_joule / hth
+    else:
+        Teq = float('inf')
+    # approximate time to Tlim if Teq > Tlim (first-order RC)
+    time_to_Tlim = None
+    if Teq > Tlim and hth > 1e-9:
+        tau_th = Cth / hth
+        # T(t) = Teq + (T0-Teq) * exp(-t/tau)
+        # solve for t where T(t)=Tlim
+        if Tnow < Tlim:
+            try:
+                time_to_Tlim = -tau_th * math.log((Tlim - Teq) / max(Tnow - Teq, -1e-9))
+            except Exception:
+                time_to_Tlim = None
+
+    # Overspeed margin
+    overspeed = rpm_target > 0.9 * rpm_limit
+
+    msgs = []
+    # feasibility
+    if tau_max <= 0:
+        msgs.append("❌ Max drive torque is zero. Increase Kt, Imax, or duty.")
+    else:
+        # can it hold target against losses?
+        if tau_max < tau_loss_target:
+            msgs.append("⚠️ Max torque is **below loss torque at target** — it will never reach/hold the target RPM.")
+        # time to target
+        if math.isfinite(time_to_target):
+            if time_to_target > 300:
+                msgs.append(f"⚠️ Very slow spin‑up: est. **{time_to_target:,.0f} s** to target (ignoring losses).")
+            elif time_to_target > 60:
+                msgs.append(f"ℹ️ Slow spin‑up: est. **{time_to_target:,.0f} s** to target (ignoring losses).")
+        else:
+            msgs.append("⚠️ Cannot estimate time to target (target ≤ current speed or accel ~ 0).")
+
+    # thermal
+    if Teq > Tlim:
+        if time_to_Tlim is not None and time_to_Tlim > 0:
+            msgs.append(f"⚠️ Thermal limit breach at max drive: **Teq≈{Teq:.1f} K**, time to T_limit ≈ **{time_to_Tlim:,.0f} s**.")
+        else:
+            msgs.append(f"⚠️ Thermal limit breach at max drive: **Teq≈{Teq:.1f} K**.")
+    else:
+        msgs.append(f"✅ Thermal OK at max drive (Teq≈{Teq:.1f} K).")
+
+    # overspeed margin
+    if overspeed:
+        msgs.append("⚠️ Target RPM is within 10% of RPM limit. Reduce target or raise limit with care.")
+
+    # summaries
+    msgs.insert(0, f"τ_max≈{tau_max:.3g} N·m, α≈{alpha0:.3g} rad/s², ω_now≈{omega_now:.3g} rad/s.")
+    return [html.Div(m) for m in msgs] if msgs else "No issues detected."
+
 
 if __name__ == "__main__":
     app.run(debug=True, use_reloader=False, host="127.0.0.1", port=8050)
