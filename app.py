@@ -151,11 +151,11 @@ def sim_step(n, sim_state, sim_params, flags):
 
     # init
     if sim_state is None:
-        s = DashState(theta=0.0, omega=0.0, Tcoil=293.15, t=0.0)
+        s = SimState(theta=0.0, omega=0.0, Tcoil=293.15, t=0.0)
         mode = Mode.IDLE
         hist = {"t":[], "rpm":[], "Ploss":[], "T":[]}
     else:
-        s = DashState(**sim_state["state"])
+        s = SimState(**sim_state["state"])
         mode = Mode(sim_state["mode"])
         hist = sim_state["hist"]
 
