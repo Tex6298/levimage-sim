@@ -1,0 +1,23 @@
+{
+  "name": "Energy module \u2013 4 rims (~40 kWh)",
+  "description": "Four concurrent composite rims for minutes-level balancing. Target ~40 kWh at 25k rpm; efficiency-optimised with low duty and currents.",
+  "params": {
+    "I": 42.01992128015033,
+    "Kt": 0.06,
+    "R": 2.2,
+    "alpha_R": 0.0039,
+    "C_th": 450.0,
+    "h_th": 1.0,
+    "Tamb": 293.15,
+    "T_ref": 293.15,
+    "T_limit": 353.15,
+    "ke": 3e-06,
+    "kg": 1e-06,
+    "kv": 0.0,
+    "c_mech": 0.0,
+    "rpm_limit": 25000,
+    "i_max": 8.0,
+    "duty_max": 0.025,
+    "pulses_per_rev": 1
+  }
+}
