@@ -1,0 +1,23 @@
+{
+  "name": "Glass chamber @1e-7 torr",
+  "description": "Near-ideal vacuum, insulating walls, negligible eddy losses.",
+  "params": {
+    "I": 0.02,
+    "Kt": 0.05,
+    "R": 2.0,
+    "alpha_R": 0.0039,
+    "C_th": 200.0,
+    "h_th": 0.8,
+    "Tamb": 293.15,
+    "T_ref": 293.15,
+    "T_limit": 363.15,
+    "ke": 1e-06,
+    "kg": 1e-06,
+    "kv": 0.0,
+    "c_mech": 0.0,
+    "rpm_limit": 12000,
+    "i_max": 5.0,
+    "duty_max": 0.02,
+    "pulses_per_rev": 1
+  }
+}
