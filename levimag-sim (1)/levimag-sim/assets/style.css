@@ -1,0 +1,5 @@
+body{font-family:system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;}
+h2{margin:8px 0 12px 0;}
+h4{margin-top:12px;}
+.btn{padding:6px 10px;border:1px solid #ccc;border-radius:6px;background:#f7f7f7;cursor:pointer;}
+.btn:hover{background:#efefef;}
