@@ -36,16 +36,25 @@ class Mode(enum.Enum):
     BRAKE = 3
     FAULT = 4
 
+
 def pulse_torque_command(theta, omega, mode, set_rpm, p: PlantParams):
-    """Compute commanded current and duty based on position and mode (simple window)."""
+    """Compute commanded current and duty based on position and mode (simple window).
+    Includes a **start-from-rest** helper: when |ω| is tiny, always allow a pulse so
+    the rotor receives an initial kick instead of waiting for a phase window it will
+    never reach.
+    """
     rpm = omega * 60.0 / (2*np.pi)
-    # map theta to sector centered windows: N sectors
+
+    # ---- Start-from-rest helper ----
+    omega_min = 1e-3  # rad/s threshold considered "stopped"
+    force_window = abs(omega) < omega_min
+
+    # Sector/window logic
     sector_width = 2*np.pi / max(1, p.pulses_per_rev)
     th_in_sector = (theta % sector_width)
-    # center window at mid-sector
     center = 0.5 * sector_width
     window_half = 0.05 * sector_width  # 10% of sector
-    in_window = abs(th_in_sector - center) < window_half
+    in_window = abs(th_in_sector - center) < window_half or force_window
 
     i_cmd = 0.0
     if mode == Mode.SPINUP and in_window:
@@ -57,10 +66,12 @@ def pulse_torque_command(theta, omega, mode, set_rpm, p: PlantParams):
     elif mode == Mode.BRAKE and in_window:
         i_cmd = -min(p.i_max, 0.02 * rpm)
 
-    duty = 2*window_half/sector_width  # fraction of rev within pulse window
+    # Duty: ensure a tiny minimum during SPINUP from rest so a pulse happens
+    duty = 2*window_half/sector_width
+    if mode == Mode.SPINUP and force_window:
+        duty = max(duty, min(0.02, p.duty_max))  # up to 2% per rev at start
     duty = min(duty, p.duty_max)
     return i_cmd, duty
-
 def plant_derivatives(s: State, mode: Mode, set_rpm: float, p: PlantParams):
     # Commanded current & duty
     i_cmd, duty = pulse_torque_command(s.theta, s.omega, mode, set_rpm, p)
