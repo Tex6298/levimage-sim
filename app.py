@@ -129,6 +129,26 @@ def commands(n1,n2,n3,n4,locks,target):
     DashState("sim_state","data"), DashState("sim_params","data"), DashState("sim_flags","data")
 )
 def sim_step(n, sim_state, sim_params, flags):
+    # ---- Build safe defaults for flags to avoid KeyError during early UI init ----
+    if flags is None or not isinstance(flags, dict):
+        flags = {}
+    # Safe getters with defaults
+    rpm_target = flags.get("rpm_target", 3000)
+    hold_band  = flags.get("hold_band", 50)
+    rpm_min    = flags.get("rpm_min", 100)
+    interlocks_ok = flags.get("interlocks_ok", True)
+    # Normalize a full flags dict for downstream calls
+    flags = {
+        "cmd_start": flags.get("cmd_start", False),
+        "cmd_brake": flags.get("cmd_brake", False),
+        "cmd_stop":  flags.get("cmd_stop", False),
+        "cmd_reset": flags.get("cmd_reset", False),
+        "interlocks_ok": interlocks_ok,
+        "hold_band": hold_band,
+        "rpm_min": rpm_min,
+        "rpm_target": rpm_target,
+    }
+
     # init
     if sim_state is None:
         s = DashState(theta=0.0, omega=0.0, Tcoil=293.15, t=0.0)
@@ -153,13 +173,13 @@ def sim_step(n, sim_state, sim_params, flags):
     if flags is None:
         flags = {"interlocks_ok": True, "rpm_target": 3000, "cmd_start": False, "cmd_brake": False, "cmd_stop": False, "cmd_reset": False, "hold_band":50, "rpm_min":100}
     if mode != Mode.FAULT:
-        mode = next_mode(mode, s, flags["rpm_target"], flags)
+        mode = next_mode(mode, s, rpm_target, flags)
 
     # integrate several 1 ms steps per UI tick
     dt = 0.001
     steps = 50
     for _ in range(steps):
-        s, mode = step(s, mode, flags["rpm_target"], p, dt)
+        s, mode = step(s, mode, rpm_target, p, dt)
         if mode == Mode.FAULT and not flags.get("cmd_reset"): 
             break
         if mode == Mode.FAULT and flags.get("cmd_reset"):
@@ -174,6 +194,12 @@ def sim_step(n, sim_state, sim_params, flags):
     P_loss = P_eddy_gas + P_visc + P_mech
 
     hist["t"].append(s.t); hist["rpm"].append(rpm); hist["Ploss"].append(P_loss); hist["T"].append(s.Tcoil)
+
+    # Keep history from growing without bound
+    if len(hist["t"]) > 5000:
+        for k in list(hist.keys()):
+            hist[k] = hist[k][-4000:]
+
 
     fig_rpm = go.Figure().add_scatter(x=hist["t"], y=hist["rpm"], name="RPM")
     fig_rpm.update_layout(margin=dict(l=30,r=10,t=20,b=30), yaxis_title="RPM", xaxis_title="Time [s]")
@@ -190,5 +216,5 @@ def sim_step(n, sim_state, sim_params, flags):
     return sim_state, fig_rpm, fig_power, fig_temp, badge
 
 if __name__ == "__main__":
-    app.run(debug=True, use_reloader=False)
-
+    # Dash ≥3 requires app.run(); disable reloader to avoid Windows signal issues
+    app.run(debug=True, use_reloader=False, host="127.0.0.1", port=8050)
