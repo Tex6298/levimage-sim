@@ -1,7 +1,7 @@
-from dash import Dash, dcc, html, Input, Output, State, ctx
+from dash import Dash, dcc, html, Input, Output, State as DashState, ctx
 import plotly.graph_objects as go
 import numpy as np
-from levimag_sim.model import PlantParams, State, Mode, step
+from levimag_sim.model import PlantParams, State as SimState, Mode, step
 from levimag_sim.controller import next_mode
 
 app = Dash(__name__)
@@ -102,7 +102,7 @@ def update_params(I,Kt,R,alphaR,imax,duty_max,ke,kg,kv,cmech,Cth,hth,Tamb,Tref,T
     Output("sim_flags","data"),
     Input("btn_start","n_clicks"), Input("btn_brake","n_clicks"),
     Input("btn_stop","n_clicks"), Input("btn_reset","n_clicks"),
-    Input("interlocks","value"), State("rpm_target","value"),
+    Input("interlocks","value"), DashSimState("rpm_target","value"),
     prevent_initial_call=False
 )
 def commands(n1,n2,n3,n4,locks,target):
@@ -126,16 +126,16 @@ def commands(n1,n2,n3,n4,locks,target):
     Output("temp_plot","figure"),
     Output("mode_badge","children"),
     Input("tick","n_intervals"),
-    State("sim_state","data"), State("sim_params","data"), State("sim_flags","data")
+    DashSimState("sim_state","data"), DashSimState("sim_params","data"), DashSimState("sim_flags","data")
 )
 def sim_step(n, sim_state, sim_params, flags):
     # init
     if sim_state is None:
-        s = State(theta=0.0, omega=0.0, Tcoil=293.15, t=0.0)
+        s = DashSimState(theta=0.0, omega=0.0, Tcoil=293.15, t=0.0)
         mode = Mode.IDLE
         hist = {"t":[], "rpm":[], "Ploss":[], "T":[]}
     else:
-        s = State(**sim_state["state"])
+        s = DashSimState(**sim_state["state"])
         mode = Mode(sim_state["mode"])
         hist = sim_state["hist"]
 
@@ -163,7 +163,7 @@ def sim_step(n, sim_state, sim_params, flags):
         if mode == Mode.FAULT and not flags.get("cmd_reset"): 
             break
         if mode == Mode.FAULT and flags.get("cmd_reset"):
-            s = State(theta=0.0, omega=0.0, Tcoil=p.Tamb, t=0.0); mode = Mode.IDLE
+            s = DashSimState(theta=0.0, omega=0.0, Tcoil=p.Tamb, t=0.0); mode = Mode.IDLE
 
     rpm = s.omega * 60/(2*np.pi)
 
