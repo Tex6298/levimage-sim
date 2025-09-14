@@ -190,5 +190,5 @@ def sim_step(n, sim_state, sim_params, flags):
     return sim_state, fig_rpm, fig_power, fig_temp, badge
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=True, use_reloader=False)
 
